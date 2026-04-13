@@ -1,0 +1,125 @@
+{
+  "teams": [
+    {
+      "name": "Querying Platform",
+      "label": ".Team/QueryingPlatform",
+      "members": [
+        "bshepherdson",
+        "metamben",
+        "rileythomp",
+        "camsaul",
+        "technomancy"
+      ]
+    },
+    {
+      "name": "Graphy",
+      "label": ".Team/Graphy",
+      "members": [
+        "ranquild",
+        "romeovs",
+        "ericnormand",
+        "galdre",
+        "dpsutton",
+        "escherize",
+        "bgrabow"
+      ]
+    },
+    {
+      "name": "Embedding",
+      "label": ".Team/Embedding",
+      "members": [
+        "WiNloSt",
+        "npretto",
+        "heypoom",
+        "sanex3339",
+        "lorem--ipsum"
+      ]
+    },
+    {
+      "name": "Admin Webapp",
+      "label": ".Team/AdminWebapp",
+      "members": [
+        "eliotmetabase"
+      ]
+    },
+    {
+      "name": "DevEx",
+      "label": ".Team/DevEx",
+      "members": [
+        "fraserdrops",
+        "nemanjaglumac"
+      ]
+    },
+    {
+      "name": "Metabot",
+      "label": ".Team/Metabot",
+      "members": [
+        "appleby",
+        "noahmoss",
+        "retro",
+        "sloansparger",
+        "somtom",
+        "tsplude",
+        "lbrdnk",
+        "piranha",
+        "crisptrutski",
+        "undrfined"
+      ]
+    },
+    {
+      "name": "Cloud",
+      "label": "cloud",
+      "members": [
+        "filipesilva"
+      ]
+    },
+    {
+      "name": "DashViz",
+      "label": ".Team/DashViz",
+      "members": [
+        "eliotmetabase"
+      ]
+    },
+    {
+      "name": "UX West",
+      "label": ".Team/UXWest",
+      "members": [
+        "eliotmetabase",
+        "npfitz",
+        "johnswanson",
+        "nvoxland",
+        "edpaget",
+        "deniskaber",
+        "alxnddr",
+        "andsalves",
+        "kevinkelleher12"
+      ]
+    },
+    {
+      "name": "Gadget",
+      "label": ".Team/Gadget",
+      "members": [
+        "nmezzopera",
+        "bronsa",
+        "wotbrew",
+        "qnkhuat",
+        "chodorowicz",
+        "kamilmielnik",
+        "stasgavrylov",
+        "uladzimirdev",
+        "egorgrushin",
+        "metatyb"
+      ]
+    },
+    {
+      "name": "Growth Eng",
+      "label": ".Team/GrowthEng",
+      "members": [
+        "iethree",
+        "bpander",
+        "gantoreno",
+        "losrebellos"
+      ]
+    }
+  ]
+}

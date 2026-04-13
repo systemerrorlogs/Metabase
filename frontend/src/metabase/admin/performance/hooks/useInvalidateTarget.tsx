@@ -1,0 +1,56 @@
+import { useCallback } from "react";
+
+import { useInvalidateCacheConfigsMutation } from "metabase/api";
+import { addUndo } from "metabase/redux/undo";
+import { useDispatch } from "metabase/utils/redux";
+import type { CacheableModel } from "metabase-types/api";
+
+import { isErrorWithMessage, resolveSmoothly } from "../utils";
+
+export const useInvalidateTarget = (
+  targetId: number | null,
+  targetModel: CacheableModel,
+  { smooth = true, shouldThrowErrors = true } = {},
+) => {
+  const dispatch = useDispatch();
+  const [invalidateCacheConfigs] = useInvalidateCacheConfigsMutation();
+  const invalidateTarget = useCallback(async () => {
+    if (targetId === null) {
+      return;
+    }
+    const apiModel = targetModel === "metric" ? "question" : targetModel;
+    try {
+      const invalidate = invalidateCacheConfigs({
+        include: "overrides",
+        [apiModel]: targetId,
+      }).unwrap();
+      if (smooth) {
+        await resolveSmoothly([invalidate]);
+      } else {
+        await invalidate;
+      }
+    } catch (e) {
+      if (isErrorWithMessage(e)) {
+        dispatch(
+          addUndo({
+            icon: "warning",
+            message: e.data.message,
+            toastColor: "error",
+            dismissIconColor: "var(--mb-color-text-primary-inverse)",
+          }),
+        );
+      }
+      if (shouldThrowErrors) {
+        throw e;
+      }
+    }
+  }, [
+    dispatch,
+    targetId,
+    targetModel,
+    smooth,
+    shouldThrowErrors,
+    invalidateCacheConfigs,
+  ]);
+  return invalidateTarget;
+};

@@ -1,0 +1,5 @@
+.AdHocLeftSideRoot {
+  @container query-builder (max-width: 70em) {
+    align-self: start;
+  }
+}

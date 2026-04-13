@@ -1,0 +1,117 @@
+(ns metabase.testing-api.api-test
+  (:require
+   [clojure.java.io :as io]
+   [clojure.java.jdbc :as jdbc]
+   [clojure.test :refer :all]
+   [java-time.api :as t]
+   [java-time.clock]
+   [metabase.app-db.core :as mdb]
+   [metabase.search.appdb.index :as search.index]
+   [metabase.search.core :as search]
+   [metabase.test :as mt]
+   [metabase.testing-api.api :as testing]
+   [metabase.util :as u]
+   [metabase.util.date-2 :as u.date]))
+
+(set! *warn-on-reflection* true)
+
+(deftest snapshot-test
+  (when (= (mdb/db-type) :h2)
+    (let [snapshot-name (mt/random-name)]
+      (testing "Just make sure the snapshot endpoint doesn't crash."
+        (let [file (io/file (#'testing/snapshot-path-for-name snapshot-name))]
+          (try
+            (is (= nil
+                   (mt/user-http-request :rasta :post 204 (format "testing/snapshot/%s" snapshot-name))))
+            (testing (format "File %s should have been created" (str file))
+              (is (.exists file)))
+            (finally
+              (.delete file))))))))
+
+(deftest restore-test
+  (when (= (mdb/db-type) :h2)
+    (testing "Should throw Exception if file does not exist"
+      (is (= "Not found."
+             (mt/user-http-request :rasta :post 404 (format "testing/restore/%s" (mt/random-name))))))))
+
+(deftest e2e-test
+  (when (= (mdb/db-type) :h2)
+    (testing "Should be able to snapshot & restore stuff"
+      (let [snapshot-name (munge (u/qualified-name ::test-snapshot))]
+        (try
+          (is (= nil
+                 (mt/user-http-request :rasta :post 204 (format "testing/snapshot/%s" snapshot-name))))
+          (is (= nil
+                 (mt/user-http-request :rasta :post 204 (format "testing/restore/%s" snapshot-name))))
+          (finally
+            (.delete (io/file (#'testing/snapshot-path-for-name snapshot-name))))))))
+  (when (= (mdb/db-type) :h2)
+    (testing "Restore should reset the java-time clock"
+      (let [snapshot-name (munge (u/qualified-name ::test-snapshot))]
+        (try
+          (mt/user-http-request :rasta :post 204 (format "testing/snapshot/%s" snapshot-name))
+          ;; Set the clock to a fixed time
+          (mt/user-http-request :rasta :post 200 "testing/set-time" {:time "2024-01-01T00:00:00Z"})
+          (is (some? java-time.clock/*clock*) "Clock should be set before restore")
+          ;; Restore should reset the clock
+          (mt/user-http-request :rasta :post 204 (format "testing/restore/%s" snapshot-name))
+          (is (nil? java-time.clock/*clock*) "Clock should be reset after restore")
+          (finally
+            (alter-var-root #'java-time.clock/*clock* (constantly nil))
+            (.delete (io/file (#'testing/snapshot-path-for-name snapshot-name)))))))))
+
+(deftest restore-refreshes-search-index-test
+  (when (and (= (mdb/db-type) :h2) (search/supports-index?))
+    (testing "After restore, the search index tracking atoms should reflect the restored state"
+      (let [snapshot-name (munge (u/qualified-name ::search-index-snapshot))]
+        (try
+          ;; Ensure a search index exists before snapshotting
+          (mt/user-http-request :crowberto :post 200 "search/re-init")
+          (is (some? (search.index/active-table))
+              "Precondition: search index should exist before snapshot")
+          ;; Snapshot with a valid search index in place
+          (mt/user-http-request :rasta :post 204 (format "testing/snapshot/%s" snapshot-name))
+          ;; Clear the tracking atoms so we can verify they get restored
+          (reset! @#'search.index/*indexes* {:active nil, :pending nil})
+          (is (nil? (search.index/active-table))
+              "Precondition: tracking atoms should be cleared before restore")
+          ;; Restore should call sync-from-restored-db! and refresh the atoms
+          (mt/user-http-request :rasta :post 204 (format "testing/restore/%s" snapshot-name))
+          (is (some? (search.index/active-table))
+              "After restore, the active search index table should be tracked")
+          (finally
+            (.delete (io/file (#'testing/snapshot-path-for-name snapshot-name)))))))))
+
+(deftest snapshot-restore-works-with-views
+  ;; workaround for https://github.com/h2database/h2database/issues/3942, see comment in
+  ;; `restore-app-db-from-snapshot!` for more details
+  (let [snapshot-name (str (random-uuid))]
+    (mt/with-temp-empty-app-db [_conn :h2]
+      (jdbc/execute! {:datasource (mdb/app-db)} ["create table test_table (a int)"])
+      (jdbc/execute! {:datasource (mdb/app-db)} ["insert into test_table (a) values (1)"])
+      (jdbc/execute! {:datasource (mdb/app-db)} ["create or replace view test_view as select a from test_table"])
+      (jdbc/execute! {:datasource (mdb/app-db)} ["alter table test_table add column b int"])
+      (#'testing/save-snapshot! snapshot-name))
+    (mt/with-temp-empty-app-db [_conn :h2]
+      (#'testing/restore-snapshot! snapshot-name)
+      (is (= [{:a 1}] (jdbc/query {:datasource (mdb/app-db)} ["select a from test_view"]))))))
+
+(deftest set-time-test
+  (try
+    (let [t (t/zoned-date-time 2024 7 8 15 00 00)]
+      (testing "You can set exact date and reset it back"
+        (is (= {:result "set" :time "2024-07-08T15:00:00.000Z"}
+               (mt/user-http-request :rasta :post 200 "testing/set-time"
+                                     {:time (u.date/format t)})))
+        (is (=? {:result "reset" :time string?}
+                (mt/user-http-request :rasta :post 200 "testing/set-time"))))
+      (testing "You can move date with `add-ms`"
+        (is (= {:result "set" :time "2024-07-08T15:00:00.000Z"}
+               (mt/user-http-request :rasta :post 200 "testing/set-time"
+                                     {:time (u.date/format t)})))
+        (is (= {:result "set" :time "2024-07-08T15:00:10.000Z"}
+               (mt/user-http-request :rasta :post 200 "testing/set-time" {:add-ms 10000})))
+        (is (=? {:result "reset" :time string?}
+                (mt/user-http-request :rasta :post 200 "testing/set-time")))))
+    (finally
+      (alter-var-root #'java-time.clock/*clock* (constantly nil)))))

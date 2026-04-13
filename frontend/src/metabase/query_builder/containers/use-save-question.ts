@@ -1,0 +1,38 @@
+import { useCallback } from "react";
+
+import type { ScheduleCallback } from "metabase/common/hooks/use-callback-effect";
+import { setUIControls } from "metabase/redux/query-builder";
+import { useDispatch } from "metabase/utils/redux";
+import type Question from "metabase-lib/v1/Question";
+
+import { apiUpdateQuestion } from "../actions/core/core";
+import { updateUrl } from "../actions/url";
+
+interface UseSaveQuestionParams {
+  scheduleCallback?: ScheduleCallback;
+}
+
+type UseSaveQuestionResult = (
+  question: Question,
+  config?: { rerunQuery?: boolean },
+) => Promise<void>;
+
+export function useSaveQuestion({
+  scheduleCallback,
+}: UseSaveQuestionParams = {}): UseSaveQuestionResult {
+  const dispatch = useDispatch();
+
+  return useCallback(
+    async (updatedQuestion: Question, { rerunQuery } = {}) => {
+      await dispatch(apiUpdateQuestion(updatedQuestion, { rerunQuery }));
+      await dispatch(setUIControls({ isModifiedFromNotebook: false }));
+
+      scheduleCallback?.(async () => {
+        if (!rerunQuery) {
+          await dispatch(updateUrl(updatedQuestion, { dirty: false }));
+        }
+      });
+    },
+    [dispatch, scheduleCallback],
+  );
+}

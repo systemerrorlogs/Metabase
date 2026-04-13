@@ -1,0 +1,82 @@
+import { memo, useCallback, useMemo } from "react";
+import { t } from "ttag";
+
+import ErrorBoundary from "metabase/ErrorBoundary";
+import { SidebarContent } from "metabase/common/components/SidebarContent";
+import CS from "metabase/css/core/index.css";
+import { onReplaceAllVisualizationSettings } from "metabase/query_builder/actions";
+import {
+  getUiControls,
+  getVisualizationSettings,
+} from "metabase/query_builder/selectors";
+import {
+  onCloseChartSettings,
+  onOpenChartType,
+} from "metabase/redux/query-builder";
+import { useDispatch, useSelector } from "metabase/utils/redux";
+import visualizations from "metabase/visualizations";
+import { QuestionChartSettings } from "metabase/visualizations/components/ChartSettings";
+import type Question from "metabase-lib/v1/Question";
+import type { Dataset, VisualizationSettings } from "metabase-types/api";
+
+interface ChartSettingsSidebarProps {
+  question: Question;
+  result: Dataset;
+}
+
+function ChartSettingsSidebarInner({
+  question,
+  result,
+}: ChartSettingsSidebarProps) {
+  const dispatch = useDispatch();
+
+  const visualizationSettings = useSelector(getVisualizationSettings);
+  const { initialChartSetting, showSidebarTitle = false } =
+    useSelector(getUiControls);
+
+  const sidebarContentProps = showSidebarTitle
+    ? {
+        title: t`${visualizations.get(question.display())?.getUiName()} options`,
+        onBack: () => dispatch(onOpenChartType()),
+      }
+    : {};
+
+  const handleClose = useCallback(() => {
+    dispatch(onCloseChartSettings());
+  }, [dispatch]);
+
+  const card = question.card();
+  const series = useMemo(() => {
+    return [
+      {
+        ...result,
+        card,
+      },
+    ];
+  }, [card, result]);
+
+  const onChange = (settings: VisualizationSettings, question?: Question) =>
+    dispatch(onReplaceAllVisualizationSettings(settings, question));
+
+  return (
+    result && (
+      <SidebarContent
+        className={CS.fullHeight}
+        onDone={handleClose}
+        {...sidebarContentProps}
+      >
+        <ErrorBoundary>
+          <QuestionChartSettings
+            question={question}
+            series={series}
+            onChange={onChange}
+            initial={initialChartSetting}
+            computedSettings={visualizationSettings}
+          />
+        </ErrorBoundary>
+      </SidebarContent>
+    )
+  );
+}
+
+export const ChartSettingsSidebar = memo(ChartSettingsSidebarInner);

@@ -1,0 +1,669 @@
+import * as Lib from "metabase-lib";
+import { SAMPLE_METADATA, SAMPLE_PROVIDER } from "metabase-lib/test-helpers";
+import type { Series } from "metabase-types/api";
+import {
+  createMockCard,
+  createMockColumn,
+  createMockDatasetData,
+  createMockTableColumnOrderSetting,
+  createMockVisualizationSettings,
+} from "metabase-types/api/mocks";
+import { ORDERS_ID, SAMPLE_DB_ID } from "metabase-types/api/mocks/presets";
+
+import {
+  type ColumnInfo,
+  syncVizSettings,
+  syncVizSettingsWithQuery,
+  syncVizSettingsWithSeries,
+} from "./sync-viz-settings";
+
+describe("syncVizSettings", () => {
+  describe("table.columns", () => {
+    it("should not update the setting if the order of columns has changed", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [oldColumns[1], oldColumns[0]];
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_2",
+            enabled: false,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual(oldSettings);
+    });
+
+    it("should handle adding new columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_2",
+            enabled: false,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "ID_3", enabled: false },
+          { name: "ID_2", enabled: true },
+        ],
+      });
+    });
+
+    it("should handle removing columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "TOTAL",
+            enabled: false,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_2",
+            enabled: false,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_3",
+            enabled: true,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "TOTAL", enabled: false },
+          { name: "ID_2", enabled: true },
+        ],
+      });
+    });
+
+    it("should preserve settings for columns that are not present both in old and new columns", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+      ];
+      const newColumns: ColumnInfo[] = [{ name: "ID", key: "ID" }];
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "TOTAL",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "TAX",
+            enabled: false,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "TAX", enabled: false },
+        ],
+      });
+    });
+
+    it("should not create duplicate entries when there is a mismatch between old columns and current settings (metabase#54547)", () => {
+      const oldColumns: ColumnInfo[] = [{ name: "A", key: "__A" }];
+      const newColumns: ColumnInfo[] = [
+        { name: "A", key: "__A" },
+        { name: "B", key: "__B" },
+        { name: "C", key: "__C" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "A",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "B",
+            enabled: true,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "A",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "B",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "C",
+            enabled: true,
+          }),
+        ],
+      });
+    });
+
+    it("should not create duplicate entries when there is a mismatch between old columns and current settings and column names have changed (metabase#54547)", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_3",
+            enabled: false,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "ID_3", enabled: false },
+          { name: "ID_2", enabled: true },
+        ],
+      });
+    });
+  });
+
+  describe("column_settings", () => {
+    it("should handle adding new columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        column_settings: {
+          '["name","ID"]': { column_title: "@ID" },
+          '["name","ID_2"]': { column_title: "ID@" },
+        },
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        column_settings: {
+          '["name","ID"]': { column_title: "@ID" },
+          '["name","ID_3"]': { column_title: "ID@" },
+        },
+      });
+    });
+  });
+
+  describe("graph.metrics", () => {
+    it("should not update the setting if the order of columns has changed", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [oldColumns[1], oldColumns[0]];
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["ID", "ID_2"],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual(oldSettings);
+    });
+
+    it("should handle adding new columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID", isAggregation: true },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["ID", "ID_2"],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "graph.metrics": ["ID", "ID_3", "ID_2"],
+      });
+    });
+
+    it("should not add new columns if they are not coming from aggregation", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["ID", "ID_2"],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "graph.metrics": ["ID", "ID_3"],
+      });
+    });
+
+    it("should handle removing columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["ID", "TOTAL", "ID_2", "ID_3"],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "graph.metrics": ["ID", "TOTAL", "ID_2"],
+      });
+    });
+
+    it("should preserve settings for columns that are not present both in old and new columns", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "TOTAL", key: "TOTAL" },
+      ];
+      const newColumns: ColumnInfo[] = [{ name: "ID", key: "ID" }];
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["ID", "TOTAL", "TAX"],
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "graph.metrics": ["ID", "TAX"],
+      });
+    });
+  });
+
+  describe("pivot_table", () => {
+    it("should handle adding new columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+        { name: "count", key: "count" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+        { name: "count", key: "count" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "pivot_table.column_split": {
+          rows: ["ID_2"],
+          columns: ["ID"],
+          values: ["count"],
+        },
+        "pivot_table.collapsed_rows": {
+          rows: ["ID_2"],
+          value: ["1"],
+        },
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "pivot_table.column_split": {
+          rows: ["ID_3"],
+          columns: ["ID"],
+          values: ["count"],
+        },
+        "pivot_table.collapsed_rows": {
+          rows: ["ID_3"],
+          value: ["1"],
+        },
+      });
+    });
+
+    it("should handle removing columns with column.name changes", () => {
+      const oldColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PRODUCTS__ID" },
+        { name: "ID_3", key: "PEOPLE__ID" },
+        { name: "count", key: "count" },
+      ];
+      const newColumns: ColumnInfo[] = [
+        { name: "ID", key: "ID" },
+        { name: "ID_2", key: "PEOPLE__ID" },
+        { name: "count", key: "count" },
+      ];
+      const oldSettings = createMockVisualizationSettings({
+        "pivot_table.column_split": {
+          rows: ["ID_3"],
+          columns: ["ID_2", "ID"],
+          values: ["count"],
+        },
+        "pivot_table.collapsed_rows": {
+          rows: ["ID_3"],
+          value: ["1"],
+        },
+      });
+
+      const newSettings = syncVizSettings(oldSettings, newColumns, oldColumns);
+      expect(newSettings).toEqual({
+        "pivot_table.column_split": {
+          rows: ["ID_2"],
+          columns: ["ID"],
+          values: ["count"],
+        },
+        "pivot_table.collapsed_rows": {
+          rows: ["ID_2"],
+          value: ["1"],
+        },
+      });
+    });
+  });
+});
+
+describe("syncVizSettingsWithQuery", () => {
+  describe("table.columns", () => {
+    it("should handle adding new columns with column.name changes", () => {
+      const oldQuery = Lib.createTestQuery(SAMPLE_PROVIDER, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            fields: [
+              { type: "column", name: "ID", sourceName: "ORDERS" },
+              { type: "column", name: "ID", sourceName: "PEOPLE" },
+            ],
+          },
+        ],
+      });
+
+      const newQuery = Lib.createTestQuery(SAMPLE_PROVIDER, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            fields: [
+              { type: "column", name: "ID", sourceName: "ORDERS" },
+              { type: "column", name: "ID", sourceName: "PRODUCTS" },
+              { type: "column", name: "ID", sourceName: "PEOPLE" },
+            ],
+          },
+        ],
+      });
+
+      const oldSettings = createMockVisualizationSettings({
+        "table.columns": [
+          createMockTableColumnOrderSetting({
+            name: "ID",
+            enabled: true,
+          }),
+          createMockTableColumnOrderSetting({
+            name: "ID_2",
+            enabled: false,
+          }),
+        ],
+      });
+
+      const newSettings = syncVizSettingsWithQuery(
+        oldSettings,
+        newQuery,
+        oldQuery,
+      );
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "ID_3", enabled: false },
+          { name: "ID_2", enabled: true },
+        ],
+      });
+    });
+  });
+
+  describe("graph.metrics", () => {
+    it("should handle adding new columns", () => {
+      const oldQuery = Lib.createTestQuery(SAMPLE_PROVIDER, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            aggregations: [
+              {
+                type: "operator",
+                operator: "sum",
+                args: [{ type: "column", name: "TOTAL", sourceName: "ORDERS" }],
+              },
+            ],
+            breakouts: [
+              { type: "column", name: "CREATED_AT", sourceName: "ORDERS" },
+            ],
+          },
+        ],
+      });
+      const newQuery = Lib.createTestQuery(SAMPLE_PROVIDER, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            aggregations: [
+              {
+                type: "operator",
+                operator: "sum",
+                args: [{ type: "column", name: "TOTAL", sourceName: "ORDERS" }],
+              },
+              {
+                type: "operator",
+                operator: "sum",
+                args: [
+                  { type: "column", name: "SUBTOTAL", sourceName: "ORDERS" },
+                ],
+              },
+            ],
+            breakouts: [
+              { type: "column", name: "CREATED_AT", sourceName: "ORDERS" },
+            ],
+          },
+        ],
+      });
+      const oldSettings = createMockVisualizationSettings({
+        "graph.metrics": ["sum"],
+      });
+
+      const newSettings = syncVizSettingsWithQuery(
+        oldSettings,
+        newQuery,
+        oldQuery,
+      );
+      expect(newSettings).toEqual({
+        "graph.metrics": ["sum", "sum_2"],
+      });
+    });
+  });
+});
+
+describe("syncVizSettingsWithSeries", () => {
+  const query = Lib.nativeQuery(
+    SAMPLE_DB_ID,
+    Lib.metadataProvider(SAMPLE_DB_ID, SAMPLE_METADATA),
+    "SELECT * FROM ORDERS",
+  );
+
+  describe("table.columns", () => {
+    const newSeries: Series = [
+      {
+        card: createMockCard(),
+        data: createMockDatasetData({
+          cols: [
+            createMockColumn({ name: "ID", source: "native" }),
+            createMockColumn({ name: "ID_2", source: "native" }),
+            createMockColumn({ name: "ID_3", source: "native" }),
+          ],
+        }),
+      },
+    ];
+    const oldSeries: Series = [
+      {
+        card: createMockCard(),
+        data: createMockDatasetData({
+          cols: [
+            createMockColumn({ name: "ID", source: "native" }),
+            createMockColumn({ name: "ID_2", source: "native" }),
+          ],
+        }),
+      },
+    ];
+    const oldSettings = createMockVisualizationSettings({
+      "table.columns": [
+        createMockTableColumnOrderSetting({
+          name: "ID",
+          enabled: true,
+        }),
+        createMockTableColumnOrderSetting({
+          name: "ID_2",
+          enabled: false,
+        }),
+      ],
+    });
+
+    it("should handle adding new columns without column.name changes", () => {
+      const newSettings = syncVizSettingsWithSeries(
+        oldSettings,
+        query,
+        newSeries,
+        oldSeries,
+      );
+      expect(newSettings).toEqual({
+        "table.columns": [
+          { name: "ID", enabled: true },
+          { name: "ID_2", enabled: false },
+          { name: "ID_3", enabled: true },
+        ],
+      });
+    });
+
+    it("should ignore updates if there are errors in new query results", () => {
+      const newSettings = syncVizSettingsWithSeries(
+        oldSettings,
+        query,
+        newSeries.map((singleSeries) => ({
+          ...singleSeries,
+          error: { status: 500 },
+        })),
+        oldSeries,
+      );
+      expect(newSettings).toEqual(oldSettings);
+    });
+
+    it("should ignore updates if there are errors in old query results", () => {
+      const newSettings = syncVizSettingsWithSeries(
+        oldSettings,
+        query,
+        newSeries,
+        oldSeries.map((singleSeries) => ({
+          ...singleSeries,
+          error: { status: 500 },
+        })),
+      );
+      expect(newSettings).toEqual(oldSettings);
+    });
+  });
+
+  describe("graph.metrics", () => {
+    const newSeries: Series = [
+      {
+        card: createMockCard(),
+        data: createMockDatasetData({
+          cols: [
+            createMockColumn({ name: "COUNT", source: "native" }),
+            createMockColumn({ name: "AVG", source: "native" }),
+            createMockColumn({ name: "CREATED_AT", source: "native" }),
+          ],
+        }),
+      },
+    ];
+    const oldSeries: Series = [
+      {
+        card: createMockCard(),
+        data: createMockDatasetData({
+          cols: [
+            createMockColumn({ name: "COUNT", source: "native" }),
+            createMockColumn({ name: "CREATED_AT", source: "native" }),
+          ],
+        }),
+      },
+    ];
+    const oldSettings = createMockVisualizationSettings({
+      "graph.metrics": ["COUNT"],
+    });
+
+    it("should ignore metric column updates for native queries", () => {
+      const newSettings = syncVizSettingsWithSeries(
+        oldSettings,
+        query,
+        newSeries,
+        oldSeries,
+      );
+      expect(newSettings).toEqual(oldSettings);
+    });
+  });
+});

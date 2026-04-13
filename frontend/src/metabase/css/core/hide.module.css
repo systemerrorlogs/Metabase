@@ -1,0 +1,23 @@
+.hide {
+  display: none !important;
+}
+
+.show {
+  display: inherit;
+}
+
+.hidden {
+  visibility: hidden;
+}
+
+.smShow {
+  display: none;
+}
+
+/* small */
+
+@media screen and (--breakpoint-min-sm) {
+  .smShow {
+    display: inherit !important;
+  }
+}

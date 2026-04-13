@@ -1,0 +1,9 @@
+{
+  "typescript.tsc.autoDetect": "off",
+  "grunt.autoDetect": "off",
+  "jake.autoDetect": "off",
+  "gulp.autoDetect": "off",
+  "npm.autoDetect": "off",
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "cssVariables.lookupFiles": ["**/*.d.css", "node_modules/@mantine/core/*.css"]
+}
