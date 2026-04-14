@@ -22,6 +22,7 @@
    [metabase.driver.sql-jdbc.sync.interface :as sql-jdbc.sync.interface]
    [metabase.lib.schema.info :as lib.schema.info]
    [metabase.premium-features.core :refer [defenterprise]]
+   [metabase.request.connection :as request.conn]
    [metabase.tracing.core :as tracing]
    [metabase.util :as u]
    [metabase.util.i18n :refer [tru]]
@@ -347,8 +348,43 @@
    options          :- ConnectionOptions
    f                :- fn?]
   (binding [*connection-recursion-depth* (inc *connection-recursion-depth*)]
-    (if-let [conn (:connection db-or-id-or-spec)]
-      (f conn)
+    (cond
+      ;; Caller supplied a pre-opened connection via the :connection key — use it
+      ;; directly without touching the pool (existing behaviour).
+      (:connection db-or-id-or-spec)
+      (f (:connection db-or-id-or-spec))
+
+      ;; A request-scoped connection slot is active.  Reuse the existing connection
+      ;; if one has already been acquired for this request, or lazily acquire one
+      ;; from the pool and pin it to the slot for the remainder of the request.
+      ;;
+      ;; Thread-safety: compare-and-set! ensures exactly one thread wins the race
+      ;; to acquire the connection.  The loser closes its own connection immediately
+      ;; (avoiding a leak) and then falls through to use the winner's connection.
+      ;;
+      ;; ⚠ See wrap-request-connection docstring (Risk B): a single Connection is
+      ;; not safe for concurrent sub-queries.  Parallel dashboard cards and pivot
+      ;; sub-queries share this connection, which can corrupt cursor state.  This
+      ;; prototype is safe for sequential single-query request flows only.
+      request.conn/*request-connection*
+      (let [conn-atom request.conn/*request-connection*
+            existing  @conn-atom]
+        (if existing
+          ;; Already pinned — reuse.
+          (f existing)
+          ;; First use — acquire from the pool and try to pin.
+          (let [datasource (do-with-resolved-connection-data-source driver db-or-id-or-spec options)
+                new-conn   (.getConnection datasource)]
+            (if (compare-and-set! conn-atom nil new-conn)
+              ;; We won the CAS: our connection is now pinned.
+              (f new-conn)
+              ;; We lost the CAS: another thread already pinned a connection.
+              ;; Close ours to avoid a leak and use the winner's.
+              (do (.close new-conn)
+                  (f @conn-atom))))))
+
+      ;; Default: pool checkout with normal open/close lifecycle (existing behaviour).
+      :else
       (let [get-conn (^:once fn* [] (.getConnection (do-with-resolved-connection-data-source driver db-or-id-or-spec options)))]
         (if (:keep-open? options)
           (f (get-conn))
