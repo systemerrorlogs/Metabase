@@ -6,6 +6,7 @@
    [metabase.driver :as driver]
    [metabase.driver.connection :as driver.conn]
    [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
+   [metabase.request.connection :as request.conn]
    [metabase.test :as mt]
    [metabase.util.malli.registry :as mr])
   (:import
@@ -214,3 +215,132 @@
                    (fn [_conn] nil)))
                 (is (pos? (mt/metric-value system :metabase-db-connection/write-op
                                            {:connection-type "write-data"})))))))))))
+
+;;; ── request-scoped connection slot (do-with-resolved-connection guard) ───────
+;;
+;; These tests exercise the new `request.conn/*request-connection*` branch inside
+;; `do-with-resolved-connection`.  They are pure unit tests — no real database is
+;; required.  `do-with-resolved-connection-data-source` is replaced with a mock
+;; DataSource that yields proxy Connections.
+
+(defn- counting-datasource
+  "Return a `DataSource` that increments `checkout-count` atom and returns
+  `conn-to-yield` on every `.getConnection` call."
+  [conn-to-yield checkout-count]
+  (reify DataSource
+    (getConnection [_]
+      (swap! checkout-count inc)
+      conn-to-yield)))
+
+(defn- noop-conn
+  "A minimal `java.sql.Connection` proxy sufficient for the slot tests.
+  Tracks close calls via `close-count` atom."
+  []
+  (let [close-count (atom 0)]
+    {:conn        (proxy [Connection] []
+                    (isClosed [] (pos? @close-count))
+                    (close    [] (swap! close-count inc)))
+     :close-count close-count}))
+
+(deftest ^:parallel request-scoped-slot-inactive-test
+  (testing "When *request-connection* is nil the existing pool-checkout path is used"
+    (let [{:keys [conn]}   (noop-conn)
+          checkout-count   (atom 0)
+          received-conn    (atom nil)]
+      (with-redefs [sql-jdbc.execute/do-with-resolved-connection-data-source
+                    (fn [_ _ _] (counting-datasource conn checkout-count))]
+        ;; *request-connection* defaults to nil — pool path must be taken
+        (sql-jdbc.execute/do-with-resolved-connection :h2 1 {} #(reset! received-conn %)))
+      (is (= 1 @checkout-count) "exactly one pool checkout should occur")
+      (is (identical? conn @received-conn) "f must receive the pool connection"))))
+
+(deftest ^:parallel request-scoped-slot-first-use-acquires-connection-test
+  (testing "First call with active slot acquires a connection and pins it to the atom"
+    (let [{:keys [conn]}   (noop-conn)
+          checkout-count   (atom 0)
+          received-conn    (atom nil)
+          conn-atom        (atom nil)]
+      (with-redefs [sql-jdbc.execute/do-with-resolved-connection-data-source
+                    (fn [_ _ _] (counting-datasource conn checkout-count))]
+        (binding [request.conn/*request-connection* conn-atom]
+          (sql-jdbc.execute/do-with-resolved-connection :h2 1 {} #(reset! received-conn %))))
+      (is (= 1 @checkout-count)    "one pool checkout for the first use")
+      (is (identical? conn @received-conn) "f must receive the acquired connection")
+      (is (identical? conn @conn-atom)     "atom must be pinned to the acquired connection"))))
+
+(deftest ^:parallel request-scoped-slot-second-use-reuses-connection-test
+  (testing "Second call with active slot reuses the pinned connection — zero new checkouts"
+    (let [{:keys [conn]}   (noop-conn)
+          checkout-count   (atom 0)
+          calls            (atom [])]
+      (with-redefs [sql-jdbc.execute/do-with-resolved-connection-data-source
+                    (fn [_ _ _] (counting-datasource conn checkout-count))]
+        (binding [request.conn/*request-connection* (atom nil)]
+          ;; First call: acquires connection
+          (sql-jdbc.execute/do-with-resolved-connection :h2 1 {} #(swap! calls conj [:first %]))
+          ;; Second call: must reuse, not checkout again
+          (sql-jdbc.execute/do-with-resolved-connection :h2 1 {} #(swap! calls conj [:second %]))))
+      (is (= 1 @checkout-count) "only one pool checkout across both calls")
+      (is (= 2 (count @calls))  "f must be invoked for both calls")
+      (is (identical? conn (second (first @calls)))  "first call received the connection")
+      (is (identical? conn (second (second @calls))) "second call received the same connection"))))
+
+(deftest ^:parallel connection-key-in-spec-takes-priority-over-slot-test
+  (testing "The :connection key in db-or-id-or-spec overrides *request-connection* (existing behaviour preserved)"
+    (let [{:keys [conn]}        (noop-conn)
+          {spec-conn :conn}     (noop-conn)       ; a different connection via :connection key
+          checkout-count        (atom 0)
+          received-conn         (atom nil)]
+      (with-redefs [sql-jdbc.execute/do-with-resolved-connection-data-source
+                    (fn [_ _ _] (counting-datasource conn checkout-count))]
+        (binding [request.conn/*request-connection* (atom nil)]
+          ;; Pass a pre-opened connection via the :connection key
+          (sql-jdbc.execute/do-with-resolved-connection :h2 {:connection spec-conn} {} #(reset! received-conn %))))
+      (is (= 0 @checkout-count)        "pool must NOT be hit when :connection key is present")
+      (is (identical? spec-conn @received-conn) "f must receive the :connection key's connection, not the slot's"))))
+
+(deftest ^:parallel request-scoped-slot-cas-race-test
+  (testing "Concurrent first-use: only one connection is pinned; loser's connection is closed"
+    ;; Simulate two threads racing to pin a connection to the same empty atom.
+    ;; We create two distinct connections; the CAS loser must close its own connection
+    ;; and then call f with the winner's connection.
+    (let [conn-a-close  (atom 0)
+          conn-b-close  (atom 0)
+          conn-a        (proxy [Connection] []
+                          (isClosed [] (pos? @conn-a-close))
+                          (close    [] (swap! conn-a-close inc)))
+          conn-b        (proxy [Connection] []
+                          (isClosed [] (pos? @conn-b-close))
+                          (close    [] (swap! conn-b-close inc)))
+          ;; Track which connections f is actually called with
+          f-calls       (atom [])
+          ;; Shared atom starts empty
+          conn-atom     (atom nil)
+          ;; Alternate which connection the DataSource yields based on call order
+          checkout-n    (atom 0)
+          datasource    (reify DataSource
+                          (getConnection [_]
+                            (if (odd? (swap! checkout-n inc)) conn-a conn-b)))]
+      (with-redefs [sql-jdbc.execute/do-with-resolved-connection-data-source
+                    (fn [_ _ _] datasource)]
+        ;; Run two concurrent invocations against the same atom
+        (let [f1 (future
+                   (binding [request.conn/*request-connection* conn-atom]
+                     (sql-jdbc.execute/do-with-resolved-connection
+                      :h2 1 {} #(swap! f-calls conj %))))
+              f2 (future
+                   (binding [request.conn/*request-connection* conn-atom]
+                     (sql-jdbc.execute/do-with-resolved-connection
+                      :h2 1 {} #(swap! f-calls conj %))))]
+          @f1
+          @f2))
+      ;; Exactly one connection must have been pinned and used for both calls
+      (let [pinned @conn-atom]
+        (is (some? pinned) "atom must be populated after concurrent use")
+        ;; f was called twice — both times with the same pinned connection
+        (is (= 2 (count @f-calls)) "f must be called by both threads")
+        (is (every? #(identical? pinned %) @f-calls)
+            "both f invocations must receive the pinned connection"))
+      ;; Exactly one of the two connections must be closed (the CAS loser)
+      (is (= 1 (+ @conn-a-close @conn-b-close))
+          "exactly one connection must be closed (the CAS loser's)"))))
